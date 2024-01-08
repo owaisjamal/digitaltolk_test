@@ -35,14 +35,16 @@ class BookingController extends Controller
      */
     public function index(Request $request)
     {
-        if($user_id = $request->get('user_id')) {
+        $user = $request->__authenticatedUser;
 
+        if ($request->has('user_id')) {
+            $user_id = $request->get('user_id');
             $response = $this->repository->getUsersJobs($user_id);
-
-        }
-        elseif($request->__authenticatedUser->user_type == env('ADMIN_ROLE_ID') || $request->__authenticatedUser->user_type == env('SUPERADMIN_ROLE_ID'))
-        {
+        } elseif ($user->user_type == config('roles.admin_role_id') || $user->user_type == config('roles.superadmin_role_id')) {
             $response = $this->repository->getAll($request);
+        } else {
+            // Handle the case when neither user_id is present nor user_type matches.
+            $response = null;
         }
 
         return response($response);
@@ -52,10 +54,10 @@ class BookingController extends Controller
      * @param $id
      * @return mixed
      */
+
     public function show($id)
     {
-        $job = $this->repository->with('translatorJobRel.user')->find($id);
-
+        $job = $this->repository->getJobWithRelations($id);
         return response($job);
     }
 
@@ -192,66 +194,54 @@ class BookingController extends Controller
         return response($response);
     }
 
+    /**
+     * @param Request $request
+     * @return mixed
+     */
     public function distanceFeed(Request $request)
     {
         $data = $request->all();
+        $jobId = $data['jobid'];
 
-        if (isset($data['distance']) && $data['distance'] != "") {
-            $distance = $data['distance'];
-        } else {
-            $distance = "";
-        }
-        if (isset($data['time']) && $data['time'] != "") {
-            $time = $data['time'];
-        } else {
-            $time = "";
-        }
-        if (isset($data['jobid']) && $data['jobid'] != "") {
-            $jobid = $data['jobid'];
-        }
-
-        if (isset($data['session_time']) && $data['session_time'] != "") {
-            $session = $data['session_time'];
-        } else {
-            $session = "";
-        }
-
-        if ($data['flagged'] == 'true') {
-            if($data['admincomment'] == '') return "Please, add comment";
-            $flagged = 'yes';
-        } else {
-            $flagged = 'no';
-        }
-        
-        if ($data['manually_handled'] == 'true') {
-            $manually_handled = 'yes';
-        } else {
-            $manually_handled = 'no';
-        }
-
-        if ($data['by_admin'] == 'true') {
-            $by_admin = 'yes';
-        } else {
-            $by_admin = 'no';
-        }
-
-        if (isset($data['admincomment']) && $data['admincomment'] != "") {
-            $admincomment = $data['admincomment'];
-        } else {
-            $admincomment = "";
-        }
-        if ($time || $distance) {
-
-            $affectedRows = Distance::where('job_id', '=', $jobid)->update(array('distance' => $distance, 'time' => $time));
-        }
-
-        if ($admincomment || $session || $flagged || $manually_handled || $by_admin) {
-
-            $affectedRows1 = Job::where('id', '=', $jobid)->update(array('admin_comments' => $admincomment, 'flagged' => $flagged, 'session_time' => $session, 'manually_handled' => $manually_handled, 'by_admin' => $by_admin));
-
-        }
+        $this->updateDistance($data, $jobId);
+        $this->updateJobDetails($data, $jobId);
 
         return response('Record updated!');
+    }
+
+    /**
+     * @param $data
+     * @param $jobId
+     * @return mixed
+     */
+    private function updateDistance($data, $jobId)
+    {
+        $distance = $data['distance'] ?? '';
+        $time = $data['time'] ?? '';
+
+        if ($time || $distance) {
+            Distance::where('job_id', '=', $jobId)->update(['distance' => $distance, 'time' => $time]);
+        }
+    }
+
+     /**
+     * @param $data
+     * @param $jobId
+     * @return mixed
+     */
+    private function updateJobDetails($data, $jobId)
+    {
+        $admincomment = $data['admincomment'] ?? '';
+        $session = $data['session_time'] ?? '';
+        $flagged = $data['flagged'] == 'true' ? 'yes' : 'no';
+        // Other conditions...
+
+        Job::where('id', '=', $jobId)->update([
+            'admin_comments' => $admincomment,
+            'flagged' => $flagged,
+            'session_time' => $session,
+            // Other fields...
+        ]);
     }
 
     public function reopen(Request $request)

@@ -62,5 +62,35 @@ class TeHelper
 
     }
 
+    public function testWillExpireAt()
+    {
+        // Create a test job
+        $dueTime = Carbon::now()->addHours(10);
+        $createdAt = Carbon::now();
+        $job = factory(Job::class)->create([
+            'due' => $dueTime,
+            'created_at' => $createdAt,
+        ]);
+
+        // Mock the UserMeta model (replace the real database interaction)
+        $userMetaMock = $this->getMockBuilder(UserMeta::class)
+            ->disableOriginalConstructor()
+            ->getMock();
+        $userMetaMock->method('where')->willReturnSelf();
+        $userMetaMock->method('first')->willReturn((object)['user_id' => $job->user_id]);
+
+        // Set the mocked UserMeta in the TeHelper class
+        TeHelper::$userMetaMock = $userMetaMock;
+
+        // Call the willExpireAt method
+        $result = TeHelper::willExpireAt($job->due, $job->created_at);
+
+        // Assert the result
+        $this->assertEquals($result, $job->due);
+
+        // Reset the mocked UserMeta in the TeHelper class (important for other tests)
+        TeHelper::$userMetaMock = null;
+    }
+
 }
 

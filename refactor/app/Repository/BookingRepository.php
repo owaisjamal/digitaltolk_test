@@ -45,8 +45,12 @@ class BookingRepository extends BaseRepository
     {
         parent::__construct($model);
         $this->mailer = $mailer;
-        $this->logger = new Logger('admin_logger');
+        $this->initializeLogger();
+    }
 
+    private function initializeLogger()
+    {
+        $this->logger = new Logger('admin_logger');
         $this->logger->pushHandler(new StreamHandler(storage_path('logs/admin/laravel-' . date('Y-m-d') . '.log'), Logger::DEBUG));
         $this->logger->pushHandler(new FirePHPHandler());
     }
@@ -479,53 +483,135 @@ class BookingRepository extends BaseRepository
      */
     public function sendNotificationTranslator($job, $data = [], $exclude_user_id)
     {
-        $users = User::all();
-        $translator_array = array();            // suitable translators (no need to delay push)
-        $delpay_translator_array = array();     // suitable translators (need to delay push)
+        $translatorArray = $this->getSuitableTranslators($job, $data, $exclude_user_id);
+        $delayTranslatorArray = $this->getDelaySuitableTranslators($job, $data, $exclude_user_id);
+    
+        $this->logPushInfo($translatorArray, $delayTranslatorArray, $data);
+    
+        $this->sendPushNotification($translatorArray, $job->id, $data, false);
+        $this->sendPushNotification($delayTranslatorArray, $job->id, $data, true);
+    }
 
-        foreach ($users as $oneUser) {
-            if ($oneUser->user_type == '2' && $oneUser->status == '1' && $oneUser->id != $exclude_user_id) { // user is translator and he is not disabled
-                if (!$this->isNeedToSendPush($oneUser->id)) continue;
-                $not_get_emergency = TeHelper::getUsermeta($oneUser->id, 'not_get_emergency');
-                if ($data['immediate'] == 'yes' && $not_get_emergency == 'yes') continue;
-                $jobs = $this->getPotentialJobIdsWithUserId($oneUser->id); // get all potential jobs of this user
+    /**
+     * @param $job
+     * @param array $data
+     * @param $exclude_user_id
+     */
+    private function getSuitableTranslators($job, $data, $exclude_user_id)
+    {
+        $users = User::all();
+        $translatorArray = [];
+
+        foreach ($users as $user) {
+            if ($this->isTranslatorEligible($user, $job, $data, $exclude_user_id)) {
+                $translatorArray[] = $user;
+            }
+        }
+
+        return $translatorArray;
+    }
+
+     /**
+     * @param $user
+     * @param $job
+     * @param array $data
+     * @param $exclude_user_id
+     */
+    private function isTranslatorEligible($user, $job, $data, $exclude_user_id)
+    {
+        if ($user->user_type == '2' && $user->status == '1' && $user->id != $exclude_user_id) {
+            if (!$this->isNeedToSendPush($user->id)) {
+                return false;
+            }
+    
+            $notGetEmergency = TeHelper::getUsermeta($user->id, 'not_get_emergency');
+            if ($data['immediate'] == 'yes' && $notGetEmergency == 'yes') {
+                return false;
+            }
+    
+            $jobs = $this->getPotentialJobIdsWithUserId($user->id);
+    
+            foreach ($jobs as $oneJob) {
+                if ($job->id == $oneJob->id) {
+                    $userId = $user->id;
+                    $jobForTranslator = Job::assignedToPaticularTranslator($userId, $oneJob->id);
+                    if ($jobForTranslator == 'SpecificJob') {
+                        $jobChecker = Job::checkParticularJob($userId, $oneJob);
+                        if ($jobChecker != 'userCanNotAcceptJob') {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    
+        return false;
+    }
+    
+    /**
+     * @param $job
+     * @param array $data
+     * @param $exclude_user_id
+     */
+    private function getDelaySuitableTranslators($job, $data, $exclude_user_id)
+    {
+        $users = User::all();
+        $delayTranslatorArray = [];
+    
+        foreach ($users as $user) {
+            if ($user->user_type == '2' && $user->status == '1' && $user->id != $exclude_user_id) {
+                if (!$this->isNeedToSendPush($user->id)) {
+                    continue;
+                }
+    
+                $notGetEmergency = TeHelper::getUsermeta($user->id, 'not_get_emergency');
+                if ($data['immediate'] == 'yes' && $notGetEmergency == 'yes') {
+                    continue;
+                }
+    
+                $jobs = $this->getPotentialJobIdsWithUserId($user->id);
+    
                 foreach ($jobs as $oneJob) {
-                    if ($job->id == $oneJob->id) { // one potential job is the same with current job
-                        $userId = $oneUser->id;
-                        $job_for_translator = Job::assignedToPaticularTranslator($userId, $oneJob->id);
-                        if ($job_for_translator == 'SpecificJob') {
-                            $job_checker = Job::checkParticularJob($userId, $oneJob);
-                            if (($job_checker != 'userCanNotAcceptJob')) {
-                                if ($this->isNeedToDelayPush($oneUser->id)) {
-                                    $delpay_translator_array[] = $oneUser;
-                                } else {
-                                    $translator_array[] = $oneUser;
-                                }
+                    if ($job->id == $oneJob->id) {
+                        $userId = $user->id;
+                        $jobForTranslator = Job::assignedToPaticularTranslator($userId, $oneJob->id);
+                        if ($jobForTranslator == 'SpecificJob') {
+                            $jobChecker = Job::checkParticularJob($userId, $oneJob);
+                            if ($jobChecker != 'userCanNotAcceptJob' && $this->isNeedToDelayPush($user->id)) {
+                                $delayTranslatorArray[] = $user;
                             }
                         }
                     }
                 }
             }
         }
-        $data['language'] = TeHelper::fetchLanguageFromJobId($data['from_language_id']);
-        $data['notification_type'] = 'suitable_job';
-        $msg_contents = '';
-        if ($data['immediate'] == 'no') {
-            $msg_contents = 'Ny bokning för ' . $data['language'] . 'tolk ' . $data['duration'] . 'min ' . $data['due'];
-        } else {
-            $msg_contents = 'Ny akutbokning för ' . $data['language'] . 'tolk ' . $data['duration'] . 'min';
-        }
-        $msg_text = array(
-            "en" => $msg_contents
-        );
+    
+        return $delayTranslatorArray;
+    }
 
-        $logger = new Logger('push_logger');
+    /**
+     * @param $translatorArray
+     * @param array $data
+     * @param $delayTranslatorArray
+     */
+    private function logPushInfo($translatorArray, $delayTranslatorArray, $data)
+    {
+        $logger = $this->getLogger();
 
-        $logger->pushHandler(new StreamHandler(storage_path('logs/push/laravel-' . date('Y-m-d') . '.log'), Logger::DEBUG));
-        $logger->pushHandler(new FirePHPHandler());
-        $logger->addInfo('Push send for job ' . $job->id, [$translator_array, $delpay_translator_array, $msg_text, $data]);
-        $this->sendPushNotificationToSpecificUsers($translator_array, $job->id, $data, $msg_text, false);       // send new booking push to suitable translators(not delay)
-        $this->sendPushNotificationToSpecificUsers($delpay_translator_array, $job->id, $data, $msg_text, true); // send new booking push to suitable translators(need to delay)
+        $logger->addInfo('Push send for job ' . $job->id, [$translatorArray, $delayTranslatorArray, $data]);
+    }
+
+     /**
+     * @param $users
+     * @param $jobId
+     * @param array $data
+     * @param $isNeedDelay
+     */
+    private function sendPushNotification($users, $jobId, $data, $isNeedDelay)
+    {
+
+        // Use $this->logger for logging instead of creating a new logger instance
+        $this->logger->info('Push send for job ' . $jobId . ' curl answer', [$response]);
     }
 
     /**
@@ -2179,6 +2265,25 @@ class BookingRepository extends BaseRepository
         $minutes = ($time % 60);
         
         return sprintf($format, $hours, $minutes);
+    }
+
+    public function getJobWithRelations($id)
+    {
+        try {
+            $job = Job::with([
+                'translatorJobRel' => function ($query) {
+                    $query->where('cancel_at', null)->orWhere('completed_at', '!=', null);
+                },
+                // Add other relationships as needed
+            ])->findOrFail($id);
+
+            // You can add more related data as needed
+
+            return $job;
+        } catch (\Exception $e) {
+            // Handle exceptions as needed
+            return null;
+        }
     }
 
 }

@@ -231,5 +231,39 @@ class UserRepository extends BaseRepository
     {
         return User::where('user_type', 2)->get();
     }
+
+    public function testCreateOrUpdate()
+    {
+        // Mock necessary models and dependencies
+        $userRepositoryMock = $this->getMockBuilder(UserRepository::class)
+            ->disableOriginalConstructor()
+            ->setMethods(['enable', 'disable'])
+            ->getMock();
+
+        $userRepositoryMock->method('enable')->willReturn(true);
+        $userRepositoryMock->method('disable')->willReturn(true);
+
+        // Create a test user request data
+        $userData = [
+            'role' => 1, // Replace with the appropriate role ID
+            'name' => 'Test User',
+            'company_id' => 1, // Replace with the appropriate company ID
+            'department_id' => 1, // Replace with the appropriate department ID
+            'email' => 'test@example.com',
+            // Add other required fields in the request data
+        ];
+
+        // Create a test user
+        $user = factory(User::class)->create();
+
+        // Call the createOrUpdate method
+        $result = $userRepositoryMock->createOrUpdate($user->id, $userData);
+
+        // Assert the result
+        $this->assertInstanceOf(User::class, $result);
+
+        // Clean up the database
+        $user->forceDelete();
+    }
     
 }
